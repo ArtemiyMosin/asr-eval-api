@@ -5,37 +5,76 @@ on:
   pull_request:
 
 jobs:
-  test:
+  lint:
+    name: 1. Lint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+      - name: Ruff
+        run: ruff check .
 
+  test:
+    name: 2. Tests (Python ${{ matrix.python-version }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
       - name: Run tests
         run: python -m pytest -v
 
-      - name: Smoke test the running service
-        env:
-          APP_VERSION: ci-${{ github.run_number }}
+  smoke:
+    name: 3. Smoke test
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      APP_VERSION: ci-${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install runtime dependencies only
+        run: pip install -r requirements.txt
+      - name: Start service
         run: |
           uvicorn app_final:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
-          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8000/health && break; sleep 0.5; done
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8000/health && exit 0; sleep 0.5; done
+          echo "Service did not start"; cat uvicorn.log; exit 1
+      - name: Check /health and /version
+        run: |
           curl -fs http://127.0.0.1:8000/health
-          curl -fs http://127.0.0.1:8000/version | grep "ci-${{ github.run_number }}"
+          curl -fs http://127.0.0.1:8000/version | grep "$APP_VERSION"
+      - name: Check main route
+        run: |
           curl -fs -X POST http://127.0.0.1:8000/metrics/wer \
             -H "Content-Type: application/json" \
             -d '{"reference": "hello world", "hypothesis": "hello word"}'
-          echo; cat uvicorn.log
+      - name: Show service logs
+        if: always()
+        run: cat uvicorn.log
 
+  artifact:
+    name: 4. Build artifact
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Upload application artifact
         uses: actions/upload-artifact@v4
         with:

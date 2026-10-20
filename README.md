@@ -109,13 +109,22 @@ python -m pytest -v
 
 ## CI
 
-Workflow `.github/workflows/ci.yml` запускается при каждом `push` и `pull request`:
+Workflow `.github/workflows/ci.yml` запускается при каждом `push` и `pull request`.
+Он состоит из четырёх стадий. Каждая следующая стадия стартует только после успеха предыдущей:
 
-1. устанавливает зависимости из `requirements-dev.txt`;
-2. запускает `python -m pytest -v`;
-3. поднимает сервис через `uvicorn` и проверяет `/health`, `/version` и `/metrics/wer` через `curl`;
-4. после успешных проверок загружает artifact `asr-eval-api-<commit>` с файлами приложения
+```
+1. Lint  →  2. Tests (3.10 / 3.11 / 3.12)  →  3. Smoke test  →  4. Build artifact
+```
+
+1. **Lint.** Проверка кода линтером `ruff check .`.
+2. **Tests.** `python -m pytest -v` параллельно на трёх версиях Python.
+3. **Smoke test.** Сервис запускается через `uvicorn` с одними runtime-зависимостями. Через `curl`
+   проверяются `/health`, `/version` (версия берётся из переменной окружения) и `/metrics/wer`,
+   затем выводятся логи сервиса.
+4. **Build artifact.** Загружается artifact `asr-eval-api-<commit>` с файлами приложения
    (`app_final.py`, `requirements.txt`, `.env.example`, `README.md`).
+
+Линтер можно запустить и локально: `ruff check .`.
 
 Artifact можно скачать на странице запуска во вкладке **Actions**, раздел *Artifacts*.
 
