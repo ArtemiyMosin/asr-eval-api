@@ -196,3 +196,38 @@ def get_evaluation(eval_id: int):
 def delete_evaluation(eval_id: int):
     if not store.delete(eval_id):
         raise HTTPException(status_code=404, detail=f"Evaluation {eval_id} not found")
+
+
+def summarize(model: str, items: list[dict]) -> dict:
+    """Corpus-level WER (sum of errors / sum of reference words) plus averages."""
+    ref_words = sum(e["reference_words"] for e in items)
+    worst = max(items, key=lambda e: e["wer"])
+    return {
+        "model": model,
+        "evaluations": len(items),
+        "corpus_wer": round(sum(e["errors"] for e in items) / ref_words, 4),
+        "mean_wer": round(sum(e["wer"] for e in items) / len(items), 4),
+        "mean_cer": round(sum(e["cer"] for e in items) / len(items), 4),
+        "substitutions": sum(e["substitutions"] for e in items),
+        "deletions": sum(e["deletions"] for e in items),
+        "insertions": sum(e["insertions"] for e in items),
+        "worst_evaluation_id": worst["id"],
+    }
+
+
+@app.get("/models/{model_name}/summary")
+def model_summary(model_name: str):
+    items = [e for e in store.all() if e["model"] == model_name]
+    if not items:
+        raise HTTPException(status_code=404, detail=f"No evaluations for model '{model_name}'")
+    return summarize(model_name, items)
+
+
+@app.get("/leaderboard")
+def leaderboard():
+    """Models ranked by corpus WER, best first."""
+    by_model: dict[str, list[dict]] = {}
+    for e in store.all():
+        by_model.setdefault(e["model"], []).append(e)
+    rows = sorted((summarize(m, items) for m, items in by_model.items()), key=lambda r: r["corpus_wer"])
+    return [{"rank": i, **row} for i, row in enumerate(rows, 1)]
