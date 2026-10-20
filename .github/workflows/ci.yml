@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -v
+
+      - name: Smoke test the running service
+        env:
+          APP_VERSION: ci-${{ github.run_number }}
+        run: |
+          uvicorn app_final:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8000/health && break; sleep 0.5; done
+          curl -fs http://127.0.0.1:8000/health
+          curl -fs http://127.0.0.1:8000/version | grep "ci-${{ github.run_number }}"
+          curl -fs -X POST http://127.0.0.1:8000/metrics/wer \
+            -H "Content-Type: application/json" \
+            -d '{"reference": "hello world", "hypothesis": "hello word"}'
+          echo; cat uvicorn.log
+
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asr-eval-api-${{ github.sha }}
+          path: |
+            app_final.py
+            requirements.txt
+            .env.example
+            README.md
