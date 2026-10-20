@@ -10,13 +10,14 @@ from itertools import count
 from threading import Lock
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 APP_NAME = os.getenv("APP_NAME", "asr-eval-api")
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000"))
+WER_ALERT_THRESHOLD = float(os.getenv("WER_ALERT_THRESHOLD", "0.3"))
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -125,7 +126,10 @@ store = EvaluationStore()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    logger.info("Starting %s v%s (log level %s)", APP_NAME, APP_VERSION, LOG_LEVEL)
+    logger.info(
+        "Starting %s v%s (log level %s, max text length %d, WER alert threshold %.2f)",
+        APP_NAME, APP_VERSION, LOG_LEVEL, MAX_TEXT_LENGTH, WER_ALERT_THRESHOLD,
+    )
     yield
     logger.info("Shutting down %s", APP_NAME)
 
@@ -138,6 +142,17 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    logger.info(
+        "%s %s -> %d (%.1f ms)",
+        request.method, request.url.path, response.status_code, (time.perf_counter() - start) * 1000,
+    )
+    return response
+
+
 @app.get("/")
 def root():
     return {"service": APP_NAME, "docs": "/docs"}
@@ -145,7 +160,11 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "uptime_seconds": round(time.time() - STARTED_AT, 1)}
+    return {
+        "status": "ok",
+        "uptime_seconds": round(time.time() - STARTED_AT, 1),
+        "stored_evaluations": len(store.all()),
+    }
 
 
 @app.get("/version")
@@ -163,12 +182,19 @@ def metrics_wer(pair: TextPair):
 def create_evaluation(item: EvaluationIn):
     """Score a recognition result of a given model and store it."""
     metrics = compute_metrics(item.reference, item.hypothesis)
-    return store.add({
+    record = store.add({
         "model": item.model,
         "audio_id": item.audio_id,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **metrics,
     })
+    log = logger.warning if record["wer"] > WER_ALERT_THRESHOLD else logger.info
+    log(
+        "Evaluation #%d stored: model=%s audio=%s WER=%.3f CER=%.3f%s",
+        record["id"], record["model"], record["audio_id"], record["wer"], record["cer"],
+        " (above alert threshold)" if record["wer"] > WER_ALERT_THRESHOLD else "",
+    )
+    return record
 
 
 @app.get("/evaluations")
